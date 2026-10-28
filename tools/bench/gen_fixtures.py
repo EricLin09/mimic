@@ -14,7 +14,6 @@ import math
 import os
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 
 # Disable optional disk-backed JIT caches before importing librosa/numba.
 os.environ["NUMBA_DISABLE_JIT"] = "1"
@@ -59,21 +58,20 @@ def source_definitions(path: Path, names: set[str], namespace: dict) -> None:
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
 
 
-def coarse_from_pipeline(path: Path, f0: np.ndarray) -> np.ndarray:
+def coarse_from_training(path: Path, f0: np.ndarray) -> np.ndarray:
+    """The coarse pitch the voices were trained on: train/dataset.py's coarse_f0 and its constants,
+    executed from the source (the module itself imports the training stack). Until 2026-10-28 the
+    oracle was Applio's realtime pipeline, whose mel bounds are the Hz bounds."""
     tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-    candidates = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-            continue
-        name = node.targets[0].id
-        if name in {"f0_mel", "f0_coarse"}:
-            candidates.append(node)
-    candidates.sort(key=lambda node: node.lineno)
-    if len(candidates) != 3 or [n.targets[0].id for n in candidates] != ["f0_mel", "f0_mel", "f0_coarse"]:
-        raise RuntimeError("Pipeline quantizer changed; inspect source rather than silently changing the oracle")
-    namespace = {"torch": torch, "f0": torch.from_numpy(f0.copy()), "self": SimpleNamespace(f0_min=50.0, f0_max=1100.0)}
-    exec(compile(ast.Module(body=candidates, type_ignores=[]), str(path), "exec"), namespace)
-    return namespace["f0_coarse"].numpy().astype(np.float32)
+    wanted = {"F0_BIN", "F0_MEL_MIN", "F0_MEL_MAX", "coarse_f0"}
+    nodes = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in wanted) or (
+        isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) and n.targets[0].id in wanted)]
+    found = {n.name if isinstance(n, ast.FunctionDef) else n.targets[0].id for n in nodes}
+    if found != wanted:
+        raise RuntimeError(f"Training quantizer changed; inspect {path} rather than silently changing the oracle")
+    namespace = {"np": np}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
+    return namespace["coarse_f0"](f0).astype(np.float32)
 
 
 def main() -> None:
@@ -92,7 +90,7 @@ def main() -> None:
         if alternate.exists():
             rmvpe_path = alternate
     core_path = args.applio / "rvc/realtime/core.py"
-    pipeline_path = args.applio / "rvc/realtime/pipeline.py"
+    dataset_path = repo / "train/dataset.py"
     model_path = repo / "models/rmvpe.onnx"
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
@@ -158,7 +156,7 @@ def main() -> None:
         f0 = predictor.decode(hidden.copy(), thred=0.03)
     save("f0", f0)
     coarse_input = save("coarse_input", np.concatenate([f0.astype(np.float32), np.array([0, 1, 49, 50, 100, 220, 440, 880, 1100, 2000], dtype=np.float32)]))
-    save("coarse", coarse_from_pipeline(pipeline_path, coarse_input))
+    save("coarse", coarse_from_training(dataset_path, coarse_input))
 
     for n in (2400, 511):
         t = torch.arange(n, dtype=torch.float32) / 48000
@@ -180,7 +178,7 @@ def main() -> None:
                           "generator_sha256": sha256(Path(__file__))},
         "source_hashes": {"applio/rmvpe_reference.py": sha256(rmvpe_path),
                           "applio/realtime/core.py": sha256(core_path),
-                          "applio/realtime/pipeline.py": sha256(pipeline_path),
+                          "train/dataset.py": sha256(dataset_path),
                           "models/rmvpe.onnx": sha256(model_path)},
         "versions": {"python": sys.version.split()[0], "numpy": np.__version__, "torch": torch.__version__, "torchaudio": torchaudio.__version__, "onnxruntime": ort.__version__},
         "providers": session.get_providers(), "mel_frames": frames,

@@ -17,6 +17,8 @@ export interface VoiceParams {
   denoise: boolean;
   /** voice-probability threshold 0..1 the gate needs on top of the level; 0 = level only */
   vad: number;
+  /** a loud block with a steady pitch opens the gate even when the voice detector refuses it (held vowels, glides) */
+  gatePitch: boolean;
   /** 0..1: follow the speaker's loudness contour (not their absolute level); 0 = the model's own dynamics */
   envelope: number;
 }

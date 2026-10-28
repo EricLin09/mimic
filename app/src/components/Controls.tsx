@@ -182,7 +182,7 @@ function GateMeter({ threshold, min, max, source = "level" }: { threshold: numbe
 
 export function TuningPanel({ params, onChange }: { params: VoiceParams; onChange: (p: VoiceParams) => void }) {
   const set = (k: "pitch" | "indexRate" | "protect" | "envelope" | "blockMs" | "gateDb" | "vad") => (v: number) => onChange({ ...params, [k]: v } as VoiceParams);
-  // block + 60 ms lookahead + ~50 ms inference + ~30 ms cushion + device buffers
+  // block + 110 ms of lookahead and crossfade (10 + 100) + ~50 ms inference; device buffers on top
   const latency = Math.round(params.blockMs + 160);
   return (
     <div className="space-y-2.5">
@@ -211,6 +211,9 @@ export function TuningPanel({ params, onChange }: { params: VoiceParams; onChang
           value={params.vad} min={0} max={1} step={0.05} format={(v) => `${Math.round(v * 100)}%`} onChange={set("vad")} />
         <GateMeter threshold={params.vad} min={0} max={1} source="vad" />
       </div>
+      <TacToggle icon="pitch" label="音高稳定也开门" hint="拖长音、滑音照常变声"
+        title="人声门限常把拖长的元音、滑音、哼唱当成「不是人声」挡掉。开着时，响度够、音高稳定（连续 120 ms 以上）的声音也算人声，照常变声；键盘、风扇、碰撞这类没有稳定音高的声音仍然挡在外面"
+        value={params.gatePitch} onChange={(v) => onChange({ ...params, gatePitch: v })} />
       <TacToggle icon="wave" label="降噪进引擎" title="开了会先用 RNNoise 去噪再变声：键盘贴麦、风扇很吵时更干净，但安静时也会改写你的声音细节，所以默认关。门限判定始终用去噪后的信号，不受这个开关影响"
         value={params.denoise} onChange={(v) => onChange({ ...params, denoise: v })} />
     </div>

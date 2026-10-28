@@ -8,29 +8,33 @@ _mel_basis = {}
 _hann_window = {}
 
 
-def _hz_to_mel(f):
+def _hz_to_mel(f, htk=False):
     f = np.asanyarray(f, dtype=np.float64)
+    if htk:
+        return 2595.0 * np.log10(1.0 + f / 700.0)
     f_sp, min_log_hz = 200.0 / 3, 1000.0
     min_log_mel, logstep = min_log_hz / f_sp, np.log(6.4) / 27.0
     mels = f / f_sp
     return np.where(f >= min_log_hz, min_log_mel + np.log(np.maximum(f, 1e-300) / min_log_hz) / logstep, mels)
 
 
-def _mel_to_hz(m):
+def _mel_to_hz(m, htk=False):
     m = np.asanyarray(m, dtype=np.float64)
+    if htk:
+        return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
     f_sp, min_log_hz = 200.0 / 3, 1000.0
     min_log_mel, logstep = min_log_hz / f_sp, np.log(6.4) / 27.0
     freqs = f_sp * m
     return np.where(m >= min_log_mel, min_log_hz * np.exp(logstep * (m - min_log_mel)), freqs)
 
 
-def mel_filterbank(sr: int, n_fft: int, n_mels: int, fmin: float = 0.0, fmax: float = None) -> np.ndarray:
+def mel_filterbank(sr: int, n_fft: int, n_mels: int, fmin: float = 0.0, fmax: float = None, htk: bool = False) -> np.ndarray:
     """[n_mels, n_fft // 2 + 1] float32, equal to librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels,
-    fmin=fmin, fmax=fmax) with its defaults (htk=False, norm="slaney")."""
+    fmin=fmin, fmax=fmax, htk=htk) with its default Slaney normalisation (htk=True is RMVPE's front end)."""
     if fmax is None:
         fmax = float(sr) / 2
     fftfreqs = np.fft.rfftfreq(n=n_fft, d=1.0 / sr)
-    mel_f = _mel_to_hz(np.linspace(_hz_to_mel(fmin), _hz_to_mel(fmax), n_mels + 2))
+    mel_f = _mel_to_hz(np.linspace(_hz_to_mel(fmin, htk), _hz_to_mel(fmax, htk), n_mels + 2), htk)
     fdiff = np.diff(mel_f)
     ramps = np.subtract.outer(mel_f, fftfreqs)
     weights = np.zeros((n_mels, 1 + n_fft // 2), dtype=np.float32)

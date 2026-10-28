@@ -3,6 +3,7 @@ import type { VoiceParams, VoiceProfile } from "../engine/types";
 /** What the app starts from; a voice's profile.json may override any of it. */
 export const DEFAULT_PARAMS: VoiceParams = {
   pitch: 0, indexRate: 0.75, protect: 0.33, blockMs: 240, gateDb: -48, denoise: false, vad: 0.5, envelope: 0.5,
+  gatePitch: true,
 };
 
 /** models/voices/<id>/profile.json: how the UI presents a voice. Every field is optional. */

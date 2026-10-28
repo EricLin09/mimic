@@ -2,7 +2,7 @@
 
 Mimic 是 Windows 用户态实时变声器：Rust 负责 WASAPI 音频、DSP 和推理调度，ONNX Runtime DirectML 运行固定的 RVC v2 模型，Tauri 2 + React 提供本地界面。训练和导出使用单独的 Python + PyTorch 环境（`train/`、`tools/export/`），运行时不依赖 Python。
 
-本文描述已实现路径。当前默认为 **240 ms 块、2.5 s 历史上下文、60 ms 前瞻、50 ms 交叉淡化**；模型输出 40 kHz，设备通路 48 kHz。推理会话按布局固定维度，RNNoise 只用于门限副本，音高对齐声线中心，响度跟随为 0.5。
+本文描述已实现路径。当前默认为 **240 ms 块、2.5 s 历史上下文、10 ms 前瞻、100 ms 交叉淡化**；模型输出 40 kHz，设备通路 48 kHz。推理会话按布局固定维度，RNNoise 只用于门限副本，音高对齐声线中心，响度跟随为 0.5。
 
 ## 开发约束
 
@@ -23,9 +23,9 @@ Mimic 是 Windows 用户态实时变声器：Rust 负责 WASAPI 音频、DSP 和
 | `engine/src/dsp/` | RNNoise、双条件门限、Silero VAD、mel/f0、重采样、确定性噪声、SOLA/淡化 |
 | `engine/src/gpu.rs` / `probe.rs` | 本进程 GPU 占用（界面遥测）、编码脉冲往返延迟探测（`live --measure`） |
 | `engine/src/prepare.rs` | 训练数据准备：切片、重采样、contentvec 特征、RMVPE f0 |
-| `engine/src/bin/mimic.rs` | `convert`、`devices`、`live`、`gate`、`prepare` CLI |
+| `engine/src/bin/mimic.rs` | `convert`、`devices`、`live`、`gate`、`record`、`prepare` CLI |
 | `app/` | Tauri 2 bridge、React UI、mock engine；本地角色素材不随源码分发 |
-| `train/` | RVC v2 网络定义（取自 Applio）、底模下载校验、单卡训练 |
+| `train/` | RVC v2 网络定义（取自 Applio）、底模与共享网络权重的下载校验、单卡训练 |
 | `tools/export/` / `tools/bench/` | ONNX 导出/parity、DSP 回归、客观度量和研究脚本 |
 
 | 产物 | 输入 → 输出 | 说明 |
@@ -38,24 +38,24 @@ Mimic 是 Windows 用户态实时变声器：Rust 负责 WASAPI 音频、DSP 和
 | `voices/<id>/synth_det.onnx` | 上述输入加 latent/source noise、phase0 → audio | 整窗 flow 后裁 decoder 输入，引擎控制随机性和相位 |
 | `silero_vad.onnx` | 16 kHz 音频 + recurrent state → probability / 新 state | CPU 单线程；每 32 ms 更新，可选 MIT 模型 |
 
-`synth_det` 不存在时回退 legacy 路径。声线导出只需训练环境；`contentvec.onnx`、`rmvpe.onnx` 两张共享网络目前仍从 Applio 安装（`APPLIO_ROOT`）自带的上游代码和权重导出。权重和索引由用户准备。
+`synth_det` 不存在时回退 legacy 路径。声线和两张共享网络的导出都只需训练环境，共享网络的权重由 `train/pretrained.py --shared` 从上游仓库下载并校验 sha256；声线的权重和索引由用户准备。
 
 ## 默认实时路径
 
 ```text
 48 kHz WASAPI input → input ring → processing thread, one 240 ms block
   ├─ gate copy: RNNoise, 10 ms frames → own 48→16 kHz resampler
-  │     → >150 Hz RMS + Silero VAD + hysteresis / hold → convert this block or not
+  │     → >150 Hz RMS + (Silero VAD or steady YIN pitch) + hysteresis / hold → convert this block or not
   └─ raw block (RNNoise too only with --denoise-audio)
        → stateful 48→16 kHz resample → rolling conversion window
-       window = 2.5 s history + block + 50 ms fade, aligned to the 10/20 ms grids
+       window = 2.5 s history + block + 100 ms fade, aligned to the 10/20 ms grids
        ├─ pitch: newest audio + 80 ms context → mel (64 frames) → RMVPE → decode → centre on the voice's median f0
        │          (f0_stats.json) + pitch offset → coarse pitch → rolling/frozen f0 cache
        ├─ features: contentvec → duplicate final frame → retrieval of newest region
        │             → nearest ×2 → unvoiced protect blend
        └─ synth_det, fixed-shape sessions: full-window enc_p + flow, keyed latent noise
             → decoder with 12-frame warm-up, keyed source noise, continuous NSF phase
-            → 40→48 kHz resample → discard warm-up and 60 ms lookahead tail
+            → 40→48 kHz resample → discard warm-up and 10 ms lookahead tail
             → envelope follower: 0.5 of each 10 ms loudness deviation, within ±6 dB
   → SOLA/crossfade (search default 0, phase-vocoder default)
   → output ring → explicitly selected WASAPI output / virtual microphone
@@ -63,7 +63,7 @@ Mimic 是 Windows 用户态实时变声器：Rust 负责 WASAPI 音频、DSP 和
 
 回调与重型推理分离。实时启动预热模型并预填输出；队列不足、设备错误和耗时进入遥测/错误通路，不自动改变系统默认设备。
 
-seamless 模式把块对齐到 20 ms，保持 contentvec 的 320-sample / 16 kHz 网格不漂移。默认窗口为 44,640 个 16 kHz 采样、279 个 100 fps 帧；contentvec 输出 139 帧，补一帧后 ×2。skip=250、lookahead=6、decoder margin=12，decoder 从第 232 帧开始渲染 47 帧，再丢预热/前瞻部分。
+seamless 模式把块对齐到 20 ms，保持 contentvec 的 320-sample / 16 kHz 网格不漂移。默认窗口为 45,600 个 16 kHz 采样、285 个 100 fps 帧；contentvec 输出 142 帧，补一帧后 ×2。skip=250、lookahead=1、decoder margin=12，decoder 从第 237 帧开始渲染 48 帧，再丢预热/前瞻部分。
 
 ## 门限与降噪
 
@@ -72,13 +72,14 @@ seamless 模式把块对齐到 20 ms，保持 contentvec 的 320-sample / 16 kHz
 - 开门电平默认 −48 dBFS，已开门时低 6 dB。
 - Silero 默认阈值 0.5，已开门时减 0.15；至少一个 32 ms chunk 给出语音证据。
 - hold 名义 400 ms，按块向上取整；240 ms 默认块对应两块保持时间。
+- 电平够、YIN 在门限副本上测到稳定音高（60–1000 Hz，周期误差 < 0.05，连续 120 ms）的块也算语音：Silero 常把拖长的元音、滑音和哼唱判成非语音。`--no-gate-pitch` 或界面开关关闭。
 - 无 VAD 模型或 `--vad 0` 时退回电平条件；`--no-denoise` 完全不用 RNNoise，门限也看原始音频。
 
 门关时仍推进上下文和音高/相位的时间轴，跳过主推理并消耗淡化尾音。VAD 只判断语音，不识别说话人，旁人讲话仍可能开门。RNNoise 默认只用于 gate；对干净输入，主干降噪与否到 offline 渲染的距离无显著差异，配对差 +0.004 ± 0.044，取舍依据听感。
 
 ## 一致性与优化边界
 
-已有方法包括绝对时间键控 latent/source noise、连续 NSF phase、已输出帧 f0 冻结、decoder 左侧 12 帧预热和 6 帧 lookahead。相邻窗口仍重算全局 attention，同一帧表示可能变化；seamless 是工程模式名，不代表数学上逐样本一致。
+已有方法包括绝对时间键控 latent/source noise、连续 NSF phase、已输出帧 f0 冻结、decoder 左侧 12 帧预热和 1 帧 lookahead。相邻窗口仍重算全局 attention，同一帧表示可能变化；seamless 是工程模式名，不代表数学上逐样本一致。
 
 默认仍为 phase-vocoder crossfade。相关度自适应淡化已提供独立模块与可选模式，它补偿统计功率而非任意短时 RMS，不因合成测试而自动改变默认。冻结特征/latent 与 decoder overlap-save 仍是 [流式设计](streaming-overlap-save-design.md)，没有接入默认管线。
 
@@ -90,4 +91,4 @@ DSP 回归现用确定性 sweep + harmonics + seeded noise，fixtures/manifest �
 
 本地 137 段对齐语音的 mean log-mel L1 到 offline 渲染距离：Mimic 240 ms / 2.5 s context 为 4.03 dB，Applio realtime 250 ms 为 4.14 dB；这是特定模型/测试集结果，不是通用听感保证。音高对齐使用声线全部原声浊音帧的中位数（`f0_stats.json`），说话人按 120 Hz 计。
 
-远期目标仍是块≤150 ms、端到端≤200 ms、RTF≤0.5 与无明显接缝。**当前 240 ms 块加 60 ms 前瞻已经超过 200 ms，不满足该延迟目标。** 真实往返延迟还含队列和设备缓冲：UI 显示的是估算，设备通路用 `live --measure` 回环实测。空闲 GPU 性能不代表游戏争用时尾延迟。
+远期目标仍是块≤150 ms、端到端≤200 ms、RTF≤0.5 与无明显接缝。**当前 240 ms 块加 10 ms 前瞻和 100 ms 交叉淡化已经超过 200 ms，不满足该延迟目标。** 真实往返延迟还含队列和设备缓冲：UI 显示的是估算，设备通路用 `live --measure` 回环实测。空闲 GPU 性能不代表游戏争用时尾延迟。

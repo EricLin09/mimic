@@ -18,6 +18,8 @@
 models/**
 # Explicit, reviewed exception: upstream MIT Silero VAD ships with the code.
 !models/silero_vad.onnx
+# third-party weights fetched by train/pretrained.py
+train/pretrained/
 
 # Research scratch: retain our source/reports/licenses, not generated/raw assets.
 tools/bench/scratch/**/*

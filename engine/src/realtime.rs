@@ -610,17 +610,21 @@ impl Drop for LiveSession {
     }
 }
 
-/// Capture `seconds` of mono 48 kHz audio from an input device (the default one when `name` is
-/// None), calling `tick` about twice a second with (elapsed s, level dBFS of the last 0.5 s).
-/// Diagnostics only: no models, no output stream.
-pub fn record_input(name: Option<&str>, seconds: f32, mut tick: impl FnMut(f32, f32)) -> Result<Vec<f32>> {
+/// The name of the input device `name` selects (the default one when None), without opening it.
+pub fn input_name(name: Option<&str>) -> Result<String> {
+    Ok(dev_name(&find_device(&cpal::default_host(), name, true)?))
+}
+
+/// Capture mono 48 kHz audio from an input device (the default one when `name` is None) until
+/// `tick` returns false. `tick` runs every `every` with (samples so far, RMS dBFS, peak dBFS), both
+/// levels over the newest `every`. Diagnostics only: no models, no output stream.
+pub fn record_while(name: Option<&str>, every: Duration, mut tick: impl FnMut(usize, f32, f32) -> bool) -> Result<Vec<f32>> {
     let host = cpal::default_host();
     let dev = find_device(&host, name, true)?;
     let sup = dev.default_input_config()?;
     let ch = sup.channels() as usize;
     let cfg = cpal::StreamConfig { channels: sup.channels(), sample_rate: DEVICE_RATE, buffer_size: cpal::BufferSize::Default };
-    let want = (DEVICE_RATE as f32 * seconds) as usize;
-    let buf = Arc::new(Mutex::new(Vec::<f32>::with_capacity(want + DEVICE_RATE as usize)));
+    let buf = Arc::new(Mutex::new(Vec::<f32>::new()));
     let sink = buf.clone();
     let stream = dev
         .build_input_stream::<f32, _, _>(
@@ -634,21 +638,33 @@ pub fn record_input(name: Option<&str>, seconds: f32, mut tick: impl FnMut(f32, 
         )
         .with_context(|| format!("opening input {:?} at 48 kHz", dev_name(&dev)))?;
     stream.play()?;
-    let start = Instant::now();
+    let window = (DEVICE_RATE as f64 * every.as_secs_f64()) as usize;
+    let db = |x: f32| 20.0 * x.max(1e-6).log10();
     loop {
-        thread::sleep(Duration::from_millis(500));
-        let (len, level) = {
+        thread::sleep(every);
+        let (len, level, peak) = {
             let b = buf.lock().unwrap();
-            let tail = &b[b.len().saturating_sub(DEVICE_RATE as usize / 2)..];
-            (b.len(), crate::dsp::rms(tail))
+            let tail = &b[b.len().saturating_sub(window)..];
+            (b.len(), crate::dsp::rms(tail), tail.iter().fold(0f32, |m, x| m.max(x.abs())))
         };
-        tick(start.elapsed().as_secs_f32(), 20.0 * level.max(1e-6).log10());
-        if len >= want {
+        if !tick(len, db(level), db(peak)) {
             break;
         }
     }
     drop(stream);
-    let mut v = std::mem::take(&mut *buf.lock().unwrap());
+    Ok(std::mem::take(&mut *buf.lock().unwrap()))
+}
+
+/// Capture `seconds` of mono 48 kHz audio from an input device (the default one when `name` is
+/// None), calling `tick` about twice a second with (elapsed s, level dBFS of the last 0.5 s).
+/// Diagnostics only: no models, no output stream.
+pub fn record_input(name: Option<&str>, seconds: f32, mut tick: impl FnMut(f32, f32)) -> Result<Vec<f32>> {
+    let want = (DEVICE_RATE as f32 * seconds) as usize;
+    let start = Instant::now();
+    let mut v = record_while(name, Duration::from_millis(500), |len, level, _| {
+        tick(start.elapsed().as_secs_f32(), level);
+        len < want
+    })?;
     v.truncate(want);
     Ok(v)
 }

@@ -1,31 +1,35 @@
-"""contentvec (HuBERT base, RVC v2 features) -> models/contentvec.onnx, then check against PyTorch."""
-import os
-import sys
+"""contentvec (HuBERT base, RVC v2 features) -> models/contentvec.onnx, then check against PyTorch.
+
+Usage: export_contentvec.py [--weights DIR]
+
+DIR holds contentvec in the transformers layout (config.json + pytorch_model.bin):
+train/pretrained/contentvec by default (train/pretrained.py --shared). Needs transformers
+(pip install transformers==5.13.1, the version the current graph was exported with), which nothing
+else in the repository uses. The self-check runs on the recording MIMIC_PARITY_WAV names, else on
+synthetic speech.
+"""
+import argparse
 from pathlib import Path
 
 import onnxruntime as ort
 import torch
+from transformers import HubertModel
 
-# The shared nets are still exported from Applio's copies of the upstream code and weights (run with
-# Applio's interpreter, -I -B; APPLIO_ROOT names the install). Only these two scripts need it; the
-# voice exports do not.
-APPLIO = Path(os.environ.get("APPLIO_ROOT", "C:/Applio"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # python -I leaves the script's directory off
-sys.path.insert(0, str(APPLIO))
-os.chdir(APPLIO)  # Applio resolves several paths relative to the working directory
+from common import MODELS, compare, load_wav_16k, parity_audio, strip_parametrizations
 
-from rvc.lib.utils import HubertModelWithFinalProj  # noqa: E402
-from common import MODELS, compare, parity_audio, strip_parametrizations  # noqa: E402
-
-
-def load_wav_16k(path) -> torch.Tensor:
-    import librosa
-
-    audio, _ = librosa.load(str(path), sr=16000, mono=True)
-    return torch.from_numpy(audio).float()
-
+import pretrained  # noqa: E402  (train/, put on sys.path by common)
 
 OUT = MODELS / "contentvec.onnx"
+
+
+class HubertModelWithFinalProj(HubertModel):
+    """contentvec's checkpoint layout (as in RVC): HuBERT plus a final_proj head. The head is not part of
+    the graph, but with it the checkpoint loads without leftovers and the export matches the original
+    file byte for byte (the tracer numbers values after the head's parameters)."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.final_proj = torch.nn.Linear(config.hidden_size, config.classifier_proj_size)
 
 
 class LastHidden(torch.nn.Module):
@@ -37,9 +41,17 @@ class LastHidden(torch.nn.Module):
         return self.hubert(audio)["last_hidden_state"]
 
 
-hubert = HubertModelWithFinalProj.from_pretrained(
-    str(APPLIO / "rvc/models/embedders/contentvec"), attn_implementation="eager"
-)
+p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+p.add_argument("--weights", type=Path)
+args = p.parse_args()
+if args.weights is None:
+    pretrained.ensure("contentvec/config.json")
+    weights = pretrained.ensure("contentvec/pytorch_model.bin").parent
+else:
+    weights = args.weights
+MODELS.mkdir(parents=True, exist_ok=True)
+
+hubert = HubertModelWithFinalProj.from_pretrained(str(weights), attn_implementation="eager")
 model = LastHidden(strip_parametrizations(hubert)).eval()
 
 with torch.inference_mode():
@@ -55,7 +67,6 @@ with torch.inference_mode():
     )
 print(f"wrote {OUT} ({OUT.stat().st_size / 1e6:.0f} MB)")
 
-# parity on real speech, CPU only
 audio = parity_audio(6, load_wav_16k).unsqueeze(0)
 with torch.inference_mode():
     ref = model(audio)

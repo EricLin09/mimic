@@ -52,6 +52,10 @@ pub struct Params {
     /// only stays open (0.15 lower), while part of the block scores above it, so loud non-speech
     /// (rubbing the headset, a phone put down on the desk) is not converted. 0 = level only.
     pub vad: f32,
+    /// Also open for a loud block that holds a steady pitch even when Silero does not call it
+    /// speech: sustained vowels, glides and humming, which it often refuses. On by default since
+    /// 2026-10-28 (listening on eval-v1's glides); noise without a steady pitch stays out.
+    pub gate_pitch: bool,
     /// Follow the speaker's loudness contour (not their absolute level): 0 keeps the model's own
     /// dynamics, 0.5 takes half of each 10 ms deviation from the long-term level difference.
     pub envelope: f32,
@@ -68,7 +72,7 @@ impl Default for Params {
         // realtime output's loudness tracking up to the offline render's (both from opt-round-1)
         Self {
             pitch: 0.0, index_rate: 0.75, protect: 0.33, silence_db: -48.0, denoise_audio: false, denoise_gate: true, vad: 0.5, envelope: 0.5,
-            f0_map: None, align_pitch: true,
+            f0_map: None, align_pitch: true, gate_pitch: true,
         }
     }
 }
@@ -105,13 +109,16 @@ pub struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        // Listening tests (2026-10-27): 240 ms blocks with 2.5 s context and a 60 ms lookahead
-        // scored 4.03 on the distance-to-offline metric, better than Applio's 250 ms (4.14); the
-        // lookahead settles contentvec features and RMVPE pitch; seamless renders are
-        // time-aligned, so SOLA's search only adds jitter and is off.
+        // Listening tests (2026-10-27): 240 ms blocks with 2.5 s context scored 4.03 on the
+        // distance-to-offline metric, better than Applio's 250 ms (4.14). Held vowels and glides
+        // (2026-10-28, eval-v1) turned the 50 ms crossfade into a seam every block; 10 ms of
+        // lookahead and a 100 ms crossfade instead of 60 + 50 keep the delay (+10 ms) and bring the
+        // seam flux on the glides to the offline render's (1.13, was 1.44), chosen by listening;
+        // `--lookahead 6 --crossfade-ms 50` is the old layout. Seamless renders are time-aligned,
+        // so SOLA's search only adds jitter and is off.
         Self {
-            block_ms: 240.0, extra_s: 2.5, crossfade_s: 0.05, sola_ms: 0.0,
-            seamless: true, margin_frames: 12, phase_vocoder: true, adaptive_xfade: false, lookahead_frames: 6,
+            block_ms: 240.0, extra_s: 2.5, crossfade_s: 0.1, sola_ms: 0.0,
+            seamless: true, margin_frames: 12, phase_vocoder: true, adaptive_xfade: false, lookahead_frames: 1,
             onset_fade_ms: 50.0, f0_median: false, f0_context_ms: 80,
         }
     }
@@ -510,7 +517,7 @@ impl BlockProcessor {
         push_back(&mut self.convert, &new16);
         let shift = self.block16 / WINDOW;
         self.frames_seen += shift as u64;
-        let gate = self.gate.decide(&gate16, self.params.silence_db, self.params.vad)?;
+        let gate = self.gate.decide(&gate16, self.params.silence_db, self.params.vad, self.params.gate_pitch)?;
         let mut stats = BlockStats { level: gate.level, vad: gate.vad, speech_ms: gate.speech_ms, ..Default::default() };
 
         if !gate.open && !force {

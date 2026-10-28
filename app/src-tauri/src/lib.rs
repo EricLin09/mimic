@@ -28,6 +28,13 @@ pub struct UiParams {
     /// follow the speaker's loudness contour 0..1 (0 = the model's own dynamics)
     #[serde(default)]
     pub envelope: f32,
+    /// a steady pitch also opens the gate when Silero refuses the block
+    #[serde(default = "yes")]
+    pub gate_pitch: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
@@ -119,7 +126,7 @@ fn set_status(app: &AppHandle, shared: &Arc<Mutex<Shared>>, status: &str, error:
 fn build_processor(voice: &str, p: &UiParams) -> anyhow::Result<BlockProcessor> {
     let paths = Paths { models: repo("models"), voice: voice.to_string(), runtime: repo("runtime") };
     let layout = Layout { block_ms: p.block_ms, ..Layout::default() };
-    let params = Params { pitch: p.pitch, index_rate: p.index_rate, protect: p.protect, silence_db: p.gate_db, denoise_audio: p.denoise, vad: p.vad, envelope: p.envelope, ..Params::default() };
+    let params = Params { pitch: p.pitch, index_rate: p.index_rate, protect: p.protect, silence_db: p.gate_db, denoise_audio: p.denoise, vad: p.vad, envelope: p.envelope, gate_pitch: p.gate_pitch, ..Params::default() };
     BlockProcessor::load(&paths, Device::DirectML, &layout, params, true)
 }
 
@@ -356,7 +363,7 @@ fn engine_set_params(app: AppHandle, state: State<EngineState>, params: UiParams
             Some((s.voice.clone(), s.choice.clone()))
         } else {
             if let Some(session) = s.session.as_ref() {
-                session.set_params(Params { pitch: params.pitch, index_rate: params.index_rate, protect: params.protect, silence_db: params.gate_db, denoise_audio: params.denoise, vad: params.vad, envelope: params.envelope, ..Params::default() });
+                session.set_params(Params { pitch: params.pitch, index_rate: params.index_rate, protect: params.protect, silence_db: params.gate_db, denoise_audio: params.denoise, vad: params.vad, envelope: params.envelope, gate_pitch: params.gate_pitch, ..Params::default() });
             }
             s.params = Some(params.clone());
             None

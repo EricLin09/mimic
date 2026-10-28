@@ -1,8 +1,10 @@
 //! Engine tools: offline conversion (`convert`), device listing (`devices`), the live
-//! microphone path (`live`), the input-gate probe (`gate`) and training data (`prepare`).
+//! microphone path (`live`), the input-gate probe (`gate`), guided test recordings (`record`) and
+//! training data (`prepare`).
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -16,7 +18,7 @@ use engine::models::ort_env;
 use engine::pipeline::{DEVICE_RATE, F0Map};
 use engine::prepare::PrepareOptions;
 use engine::wav;
-use engine::{BlockProcessor, Device, Layout, LiveConfig, LiveSession, Params, Paths, list_devices, record_input};
+use engine::{BlockProcessor, Device, Layout, LiveConfig, LiveSession, Params, Paths, input_name, list_devices, record_input, record_while};
 
 #[derive(Parser)]
 #[command(name = "mimic", about = "Mimic voice engine tools")]
@@ -91,6 +93,9 @@ struct EngineOpts {
     /// voice threshold 0..1 on Silero VAD's chunk probability (0 = level-only gate)
     #[arg(long, default_value_t = Params::default().vad)]
     vad: f32,
+    /// only Silero's verdict opens the gate: a steady pitch alone (held vowels, glides) no longer does
+    #[arg(long)]
+    no_gate_pitch: bool,
     /// follow the speaker's loudness contour (shape only): 0 = the model's own dynamics
     #[arg(long, default_value_t = Params::default().envelope)]
     envelope: f32,
@@ -194,9 +199,27 @@ enum Cmd {
         /// judge the level on the raw input instead of the denoised one
         #[arg(long)]
         no_denoise: bool,
+        /// only Silero's verdict counts as voice (by default a steady pitch also opens: shown as ~)
+        #[arg(long)]
+        no_gate_pitch: bool,
         /// print every block, not just the summary
         #[arg(long, short)]
         verbose: bool,
+    },
+    /// Guided recording of a fixed test set from a script whose "# <name>" lines split it into
+    /// takes. Each take's text is shown, Enter starts and stops the microphone, and the take is
+    /// saved as <out_dir>/<name>.wav (48 kHz mono) with 2 s of room tone before and after.
+    Record {
+        /// the script, UTF-8 text
+        script: PathBuf,
+        /// folder for the takes, created if missing
+        out_dir: PathBuf,
+        /// input device name or substring (default: system default)
+        #[arg(long = "in")]
+        input: Option<String>,
+        /// record takes whose WAV already exists instead of skipping them
+        #[arg(long)]
+        redo: bool,
     },
     /// Training data for a voice: slice the WAVs as Applio does, resample to 40 kHz and extract
     /// contentvec features and RMVPE pitch with the engine's own graphs (docs/training.md).
@@ -246,7 +269,7 @@ fn build_processor(o: &EngineOpts) -> Result<BlockProcessor> {
     };
     let params = Params {
         pitch: o.pitch, index_rate: o.index, protect: o.protect, silence_db: o.silence_db, denoise_audio: o.denoise_audio && !o.no_denoise, denoise_gate: !o.no_denoise, vad: o.vad,
-        envelope: o.envelope, f0_map: o.f0_map, align_pitch: !o.no_align_pitch,
+        envelope: o.envelope, f0_map: o.f0_map, align_pitch: !o.no_align_pitch, gate_pitch: !o.no_gate_pitch,
     };
     let t = Instant::now();
     let proc = BlockProcessor::load(&paths, device, &layout, params, !o.dynamic_shapes)?;
@@ -525,7 +548,7 @@ fn measure_live(input: String, output: String, seconds: f32, o: &EngineOpts) -> 
 #[allow(clippy::too_many_arguments)]
 fn gate_probe(
     file: Option<PathBuf>, input: Option<String>, seconds: f32, save: Option<PathBuf>, block_ms: f32, gate_db: f32, vad: f32, denoise: bool,
-    verbose: bool,
+    pitch: bool, verbose: bool,
 ) -> Result<()> {
     let audio = match &file {
         Some(p) => wav::read_mono_at(p, DEVICE_RATE)?,
@@ -554,11 +577,12 @@ fn gate_probe(
     }
     let mut gate = Gate::new(block_ms, model);
     let mut down = StreamResampler::new(DEVICE_RATE, 16_000);
-    println!("gate {gate_db:.0} dB, voice {vad:.2}, block {block_ms:.0} ms, denoise {}", if denoise { "on" } else { "off" });
+    let on = |b: bool| if b { "on" } else { "off" };
+    println!("gate {gate_db:.0} dB, voice {vad:.2}, block {block_ms:.0} ms, denoise {}, steady pitch {}", on(denoise), on(pitch));
     if verbose {
         println!("{:>8} {:>9} {:>6} {:>7}  decision", "t", "level", "voice", "speech");
     }
-    let (mut n_open, mut n_hold, mut n_quiet, mut n_noise) = (0u32, 0u32, 0u32, 0u32);
+    let (mut n_open, mut n_pitch, mut n_hold, mut n_quiet, mut n_noise) = (0u32, 0u32, 0u32, 0u32, 0u32);
     let mut timeline = String::new();
     for (i, chunk) in audio.chunks(block).enumerate() {
         let mut buf = chunk.to_vec();
@@ -567,8 +591,12 @@ fn gate_probe(
             gate.denoise(&mut buf);
         }
         let a16 = down.process(&buf);
-        let r = gate.decide(&a16, gate_db, vad)?;
+        let r = gate.decide(&a16, gate_db, vad, pitch)?;
         let (what, mark) = match (r.open, r.loud, r.speech) {
+            (true, true, true) if r.by_pitch => {
+                n_pitch += 1;
+                ("OPEN on pitch only", '~')
+            }
             (true, true, true) => {
                 n_open += 1;
                 ("OPEN", '#')
@@ -588,18 +616,141 @@ fn gate_probe(
         };
         timeline.push(mark);
         if verbose {
-            println!("{:7.2}s {:7.1} dB {:6.2} {:4.0} ms  {}", i as f32 * block_ms / 1000.0, dbfs(r.level), r.vad, r.speech_ms, what);
+            println!("{:7.2}s {:7.1} dB {:6.2} {:4.0} ms {:4.0} ms  {}", i as f32 * block_ms / 1000.0, dbfs(r.level), r.vad, r.speech_ms, r.pitch_ms, what);
         }
     }
     let per_line = (10_000.0 / block_ms).round() as usize; // 10 s per line
-    println!("timeline (# open, + hold, . quiet, x loud-but-not-voice; one line = 10 s):");
+    println!("timeline (# open, ~ open on pitch only, + hold, . quiet, x loud-but-not-voice; one line = 10 s):");
     for (i, line) in timeline.as_bytes().chunks(per_line.max(1)).enumerate() {
         println!("{:4}s {}", i * 10, std::str::from_utf8(line).unwrap_or(""));
     }
     println!(
-        "blocks: {n_open} open, {n_hold} hold, {n_quiet} quiet, {n_noise} loud-but-not-voice (those would have passed a level-only gate)"
+        "blocks: {n_open} open, {n_pitch} open on pitch only, {n_hold} hold, {n_quiet} quiet, {n_noise} loud-but-not-voice (those would have passed a level-only gate)"
     );
     Ok(())
+}
+
+/// Silence kept before and after the speech of every take: room tone for gate and noise-floor checks.
+const ROOM_TONE_S: f32 = 2.0;
+
+/// One take of a recording script: the WAV's name and the text shown while recording.
+struct Take {
+    name: String,
+    text: String,
+}
+
+/// Lines "# <name>" start takes and the lines under a header are its text; anything before the
+/// first header is a preamble, shown once.
+fn parse_script(src: &str) -> Result<(String, Vec<Take>)> {
+    let mut preamble = String::new();
+    let mut takes: Vec<Take> = Vec::new();
+    for line in src.trim_start_matches('\u{feff}').lines() {
+        if let Some(name) = line.strip_prefix("# ") {
+            let name = name.trim();
+            if name.is_empty() || name.contains(['/', '\\', ':']) || takes.iter().any(|t| t.name == name) {
+                bail!("bad or repeated take name {name:?}");
+            }
+            takes.push(Take { name: name.to_string(), text: String::new() });
+        } else {
+            let text = match takes.last_mut() {
+                Some(t) => &mut t.text,
+                None => &mut preamble,
+            };
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    if takes.is_empty() {
+        bail!("no takes: start each one with a line \"# <name>\"");
+    }
+    Ok((preamble.trim().to_string(), takes))
+}
+
+/// Print a prompt and wait for a line of input; stdin closing counts as "q".
+fn ask(keys: &Receiver<String>, prompt: &str) -> String {
+    print!("{prompt} > ");
+    let _ = std::io::stdout().flush();
+    keys.recv().unwrap_or_else(|_| "q".to_string())
+}
+
+fn record_script(script: PathBuf, out_dir: PathBuf, input: Option<String>, redo: bool) -> Result<()> {
+    let src = std::fs::read_to_string(&script).with_context(|| format!("reading {}", script.display()))?;
+    let (preamble, takes) = parse_script(&src)?;
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    // keys arrive through a channel, so the level meter keeps running while we wait for Enter
+    let (tx, keys) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            if tx.send(line.unwrap_or_default().trim().to_lowercase()).is_err() {
+                break;
+            }
+        }
+    });
+    if !preamble.is_empty() {
+        println!("{preamble}\n");
+    }
+    println!("microphone: {}", input_name(input.as_deref())?);
+    'takes: for (i, take) in takes.iter().enumerate() {
+        let path = out_dir.join(format!("{}.wav", take.name));
+        if path.exists() && !redo {
+            println!("[{}/{}] {} is already recorded, skipped (--redo records it again)", i + 1, takes.len(), take.name);
+            continue;
+        }
+        loop {
+            println!("\n===== [{}/{}] {} =====\n\n{}\n", i + 1, takes.len(), take.name, take.text.trim());
+            match ask(&keys, "Enter: start   s: skip   q: quit").as_str() {
+                "q" => break 'takes,
+                "s" => continue 'takes,
+                _ => {}
+            }
+            let audio = record_take(input.as_deref(), &keys)?;
+            wav::write_mono(&path, &audio, DEVICE_RATE)?;
+            let peak = 20.0 * audio.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-6).log10();
+            let note = match peak {
+                p if p > -0.5 => "   CLIPPED: speak softer or move the mic away, then retake",
+                p if p < -30.0 => "   very quiet: check the microphone",
+                _ => "",
+            };
+            println!("saved {} ({:.1} s, peak {peak:.1} dBFS){note}", path.display(), audio.len() as f32 / DEVICE_RATE as f32);
+            match ask(&keys, "Enter: next   r: retake   q: quit").as_str() {
+                "r" => continue,
+                "q" => break 'takes,
+                _ => continue 'takes,
+            }
+        }
+    }
+    println!("\ntakes are in {}", out_dir.display());
+    Ok(())
+}
+
+/// One take: ROOM_TONE_S of silence, speech until Enter, ROOM_TONE_S of silence, with a level meter.
+fn record_take(input: Option<&str>, keys: &Receiver<String>) -> Result<Vec<f32>> {
+    let rate = DEVICE_RATE as f32;
+    let mut stop: Option<usize> = None;
+    let audio = record_while(input, Duration::from_millis(100), |n, level, peak| {
+        let t = n as f32 / rate;
+        let state = if t < ROOM_TONE_S {
+            while keys.try_recv().is_ok() {} // an Enter during the lead-in does not end the take
+            format!("quiet {:.0}", (ROOM_TONE_S - t).ceil())
+        } else if let Some(s) = stop {
+            let left = ROOM_TONE_S - (n - s) as f32 / rate;
+            if left <= 0.0 {
+                return false;
+            }
+            format!("quiet {:.0}", left.ceil())
+        } else {
+            if !matches!(keys.try_recv(), Err(TryRecvError::Empty)) {
+                stop = Some(n);
+            }
+            format!("SPEAK {:5.1} s   Enter: stop", t - ROOM_TONE_S)
+        };
+        let bar = ((level + 60.0) / 2.0).clamp(0.0, 30.0) as usize;
+        print!("\r{state:<28} [{:<30}] {level:6.1} dB {}", "=".repeat(bar), if peak > -0.5 { "CLIP" } else { "    " });
+        let _ = std::io::stdout().flush();
+        true
+    })?;
+    println!();
+    Ok(audio)
 }
 
 fn prepare(wav_dir: PathBuf, out_dir: PathBuf, cpu: bool, loudness: Option<f32>) -> Result<()> {
@@ -621,9 +772,31 @@ fn main() -> Result<()> {
         Cmd::Live { input, output, in_file, record, seconds, prime_ms, monitor, measure, engine } => {
             live(input, output, in_file, record, seconds, prime_ms, monitor, measure, engine)
         }
-        Cmd::Gate { file, input, seconds, save, block_ms, gate_db, vad, no_denoise, verbose } => {
-            gate_probe(file, input, seconds, save, block_ms, gate_db, vad, !no_denoise, verbose)
+        Cmd::Gate { file, input, seconds, save, block_ms, gate_db, vad, no_denoise, no_gate_pitch, verbose } => {
+            gate_probe(file, input, seconds, save, block_ms, gate_db, vad, !no_denoise, !no_gate_pitch, verbose)
         }
+        Cmd::Record { script, out_dir, input, redo } => record_script(script, out_dir, input, redo),
         Cmd::Prepare { wav_dir, out_dir, cpu, loudness } => prepare(wav_dir, out_dir, cpu, loudness),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_script;
+
+    #[test]
+    fn script_splits_into_takes() {
+        let (preamble, takes) = parse_script("\u{feff}read slowly\r\n# 01_chat\r\nhello\r\n\r\nworld\r\n# 02_calls\nB two\n").unwrap();
+        assert_eq!(preamble, "read slowly");
+        assert_eq!(takes.len(), 2);
+        assert_eq!((takes[0].name.as_str(), takes[0].text.trim()), ("01_chat", "hello\n\nworld"));
+        assert_eq!((takes[1].name.as_str(), takes[1].text.trim()), ("02_calls", "B two"));
+    }
+
+    #[test]
+    fn script_needs_safe_unique_names() {
+        assert!(parse_script("no header at all").is_err());
+        assert!(parse_script("# a\nx\n# a\ny").is_err());
+        assert!(parse_script("# ../a\nx").is_err());
     }
 }

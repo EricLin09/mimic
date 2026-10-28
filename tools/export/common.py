@@ -5,6 +5,7 @@ Run the scripts with the training environment (docs/training.md):
     train\\.venv\\Scripts\\python.exe tools\\export\\<script>.py ...
 Output goes under models/ (set MIMIC_MODELS to write somewhere else).
 """
+import math
 import os
 import struct
 import sys
@@ -18,6 +19,31 @@ REPO = Path(__file__).resolve().parents[2]
 MODELS = Path(os.environ.get("MIMIC_MODELS", REPO / "models"))
 
 sys.path.insert(0, str(REPO / "train"))
+
+
+def resample(x: torch.Tensor, orig: int, new: int, width: int = 6) -> torch.Tensor:
+    """1-D torchaudio.functional.resample (sinc_interp_hann, rolloff 0.99), without torchaudio."""
+    g = math.gcd(orig, new)
+    orig, new = orig // g, new // g
+    if orig == new:
+        return x
+    base = min(orig, new) * 0.99
+    w = math.ceil(width * orig / base)
+    idx = torch.arange(-w, w + orig, dtype=torch.float64)[None, None] / orig
+    t = ((torch.arange(0, -new, -1, dtype=torch.float64)[:, None, None] / new + idx) * base).clamp(-width, width)
+    window = torch.cos(t * math.pi / width / 2) ** 2
+    t = t * math.pi
+    kernel = torch.where(t == 0, torch.ones_like(t), t.sin() / t) * window * (base / orig)
+    y = torch.nn.functional.conv1d(torch.nn.functional.pad(x.float()[None, None], (w, w + orig)), kernel.float(), stride=orig)
+    return y.transpose(1, 2).reshape(-1)[: math.ceil(new * len(x) / orig)]
+
+
+def load_wav_16k(path) -> torch.Tensor:
+    """A WAV as mono 16 kHz float32 (the realtime path's resampler)."""
+    from wavio import read_wav
+
+    audio, rate = read_wav(path)
+    return resample(torch.from_numpy(audio), rate, 16000)
 
 
 def strip_parametrizations(module: torch.nn.Module) -> torch.nn.Module:

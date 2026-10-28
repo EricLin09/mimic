@@ -6,13 +6,13 @@
     "frames": 24000,
     "sample_rate": 48000,
     "contains_personal_recording": false,
-    "generator_sha256": "84c93f3a767ae36bca51556883234f27f4ff2d459d604745de23872cab4481a4"
+    "generator_sha256": "7ac9c2f69fd3d7a6e8b22dcb17797f30ee572521396bbbdc34e41900ea13349b"
   },
   "source_hashes": {
     "applio/rmvpe_reference.py": "824688722008562337d63495a21aeb7724c9d30590f2c5274235008d5942b0e4",
     "applio/realtime/core.py": "2078f8453844361b75dd3246f2bc6f5cc4f62a87213f5a08264a8132ead446df",
-    "applio/realtime/pipeline.py": "e21f2a091960b6ff35bbb879a549e7abb26532f683f57dec4cee73d0e52416b4",
-    "models/rmvpe.onnx": "8518d3584d6c383c2799da7f50726d2df7e73ccf2c50b355ae3b95dfbae855d6"
+    "models/rmvpe.onnx": "8518d3584d6c383c2799da7f50726d2df7e73ccf2c50b355ae3b95dfbae855d6",
+    "train/dataset.py": "27709e41e5fef8c389a8f1489e6410cdf4a531971f2fadf8ddb2265d63ca8d8b"
   },
   "versions": {
     "python": "3.12.15",
@@ -123,7 +123,7 @@
         69
       ],
       "bytes": 276,
-      "sha256": "d94c6e52b11fe925ca677429588c6352398dc0a2693e6d69ec5d2f1b3aae160b"
+      "sha256": "fb5ed9a67db92458f4f0bf895a9b09a70d7b9e1cbfb423911f5e09752cd46d39"
     },
     "pv_2400_a": {
       "shape": [
@@ -167,5 +167,6 @@
       "bytes": 2044,
       "sha256": "8eaaf99fad94a93c5de6cdafd3c44d2cb30ae9b827a65db307637eed090d90d4"
     }
-  }
+  },
+  "coarse_oracle": "train/dataset.py coarse_f0, the training formula; coarse alone regenerated 2026-10-28 (before: Applio's realtime pipeline, mel bounds = Hz bounds); every other array is unchanged"
 }

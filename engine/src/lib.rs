@@ -13,4 +13,4 @@ pub mod wav;
 pub use models::{Device, Models, Paths};
 pub use pipeline::{BlockProcessor, BlockStats, Layout, Params};
 pub use realtime::{DeviceInfo, LiveConfig, LiveSession, Telemetry, list_devices};
-pub use realtime::record_input;
+pub use realtime::{input_name, record_input, record_while};

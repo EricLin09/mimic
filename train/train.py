@@ -17,6 +17,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import random
 import subprocess
 import sys
 import time
@@ -118,8 +119,10 @@ def latest(run_dir: Path, prefix: str):
     return max(found)[1] if found else None
 
 
-def export(ckpt: Path, retrieval: Path, voice: str):
-    for script, source in [("export_synth.py", ckpt), ("export_synth_det.py", ckpt), ("export_retrieval.py", retrieval)]:
+def export(ckpt: Path, prepare_dir: Path, voice: str):
+    """The voice's four graphs' worth of files: synth, synth_det, retrieval and f0_stats.json."""
+    for script, source in [("export_synth.py", ckpt), ("export_synth_det.py", ckpt),
+                           ("export_retrieval.py", prepare_dir / "retrieval.npy"), ("export_f0_stats.py", prepare_dir)]:
         print(f"export: {script} {source} {voice}", flush=True)
         subprocess.run([sys.executable, str(REPO / "tools" / "export" / script), str(source), voice], check=True)
 
@@ -133,6 +136,8 @@ def main():
     p.add_argument("--save-every", type=int, default=25, help="epochs between checkpoints")
     p.add_argument("--precision", choices=DTYPES, default="fp16", help="autocast dtype (fp16 as Applio's default)")
     p.add_argument("--mute", type=int, default=2, help="copies of the silent sample in the training set")
+    p.add_argument("--rebatch", action="store_true",
+                   help="recompose the batches every epoch instead of keeping the first epoch's on the GPU")
     p.add_argument("--name", help="checkpoint name (default: the run folder's name)")
     p.add_argument("--pretrained-g", type=Path, help="default: train/pretrained/f0G40k.pth, fetched if missing")
     p.add_argument("--pretrained-d", type=Path, help="default: train/pretrained/f0D40k.pth, fetched if missing")
@@ -212,20 +217,36 @@ def main():
     reference = (ref_phone.unsqueeze(0).to(device), torch.LongTensor([ref_phone.shape[0]]).to(device),
                  ref_pitch.unsqueeze(0).to(device), ref_pitchf.unsqueeze(0).to(device), torch.LongTensor([0]).to(device))
     metrics_path = run_dir / "metrics.csv"
-    columns = ["epoch", "step", "lr", "loss_disc", "loss_gen", "loss_fm", "loss_mel", "loss_kl", "loss_gen_all",
-               "grad_norm_d", "grad_norm_g", "seconds"]
+    losses = ["loss_disc", "loss_gen", "loss_fm", "loss_mel", "loss_kl", "loss_gen_all"]
+    # grad norms are averaged over the finite ones; fp16 steps the GradScaler skipped for overflow are counted
+    columns = ["epoch", "step", "lr", *losses, "grad_norm_d", "grad_norm_g", "skipped_steps", "seconds"]
     if not metrics_path.exists():
         metrics_path.write_text(",".join(columns) + "\n", encoding="utf-8")
 
+    def device_batches(epoch):
+        sampler.set_epoch(epoch)
+        for batch_ids in sampler:
+            yield tuple(t.to(device, non_blocking=True) for t in collate([data[i] for i in batch_ids]))
+
+    # Applio with "Cache Dataset in GPU", as in the reference Applio run (its epochs take 16 s from the second on):
+    # the first epoch's batches stay on the GPU and later epochs only shuffle their order. --rebatch recomposes
+    # them every epoch; every new padded length then costs cudnn another benchmark.
+    cached, order_rng = None, random.Random(args.seed)
     for epoch in range(first_epoch, args.epochs + 1):
         started = time.time()
-        sampler.set_epoch(epoch)
+        if args.rebatch:
+            batches = device_batches(epoch)
+        elif cached is None:
+            batches = cached = list(device_batches(epoch))
+        else:
+            order_rng.shuffle(cached)
+            batches = cached
         net_g.train()
         net_d.train()
-        sums = {c: 0.0 for c in columns[3:-1]}
-        for batch_ids in sampler:
-            phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, _, sid = (
-                t.to(device, non_blocking=True) for t in collate([data[i] for i in batch_ids]))
+        sums = {c: 0.0 for c in losses}
+        norms = {"grad_norm_d": [], "grad_norm_g": []}
+        for batch in batches:
+            phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, _, sid = batch
             with torch.autocast("cuda", enabled=use_amp, dtype=dtype):
                 y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(
                     phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
@@ -258,18 +279,21 @@ def main():
             scaler.update()
             net_d.requires_grad_(True)
             global_step += 1
-            for key, value in [("loss_disc", loss_disc), ("loss_gen", loss_gen), ("loss_fm", loss_fm),
-                               ("loss_mel", loss_mel), ("loss_kl", loss_kl), ("loss_gen_all", loss_gen_all)]:
+            for key, value in zip(losses, (loss_disc, loss_gen, loss_fm, loss_mel, loss_kl, loss_gen_all)):
                 sums[key] += float(value.detach())
-            sums["grad_norm_d"] += grad_norm_d
-            sums["grad_norm_g"] += grad_norm_g
+            norms["grad_norm_d"].append(grad_norm_d)
+            norms["grad_norm_g"].append(grad_norm_g)
 
         lr = optim_g.param_groups[0]["lr"]
         means = {k: v / steps_per_epoch for k, v in sums.items()}
+        for k, v in norms.items():
+            finite = [x for x in v if np.isfinite(x)]
+            means[k] = sum(finite) / max(len(finite), 1)
+        skipped = sum(not np.isfinite(x) for x in norms["grad_norm_g"])
         seconds = time.time() - started
         with open(metrics_path, "a", encoding="utf-8") as f:
-            f.write(",".join([str(epoch), str(global_step), f"{lr:.6e}"] + [f"{means[c]:.5f}" for c in columns[3:-1]]
-                             + [f"{seconds:.1f}"]) + "\n")
+            f.write(",".join([str(epoch), str(global_step), f"{lr:.6e}"] + [f"{means[c]:.5f}" for c in columns[3:-2]]
+                             + [str(skipped), f"{seconds:.1f}"]) + "\n")
         print(f"{name} | epoch {epoch}/{args.epochs} | step {global_step} | d {means['loss_disc']:.3f} "
               f"adv {means['loss_gen']:.3f} fm {means['loss_fm']:.3f} mel {means['loss_mel']:.3f} "
               f"kl {means['loss_kl']:.3f} total {means['loss_gen_all']:.3f} | lr {lr:.3e} | {seconds:.1f} s", flush=True)
@@ -294,7 +318,7 @@ def main():
 
     final = run_dir / f"{name}_{args.epochs}e_{global_step}s.pth"
     if args.export:
-        export(final, args.prepare_dir / "retrieval.npy", args.export)
+        export(final, args.prepare_dir, args.export)
 
 
 if __name__ == "__main__":

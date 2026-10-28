@@ -30,10 +30,15 @@ pub fn decode(salience: &[f32], frames: usize, threshold: f32) -> Vec<f32> {
         .collect()
 }
 
-/// 255-bucket mel-scale pitch used by the synthesizer's pitch embedding (1 = unvoiced).
+/// 255-bucket mel-scale pitch for the synthesizer's pitch embedding (1 = unvoiced), as in training
+/// (train/dataset.py `coarse_f0`): the 50..1100 Hz range goes through the mel formula too, in f64
+/// with ties to even like numpy's rint. Applio's realtime pipeline uses the Hz bounds as mel bounds,
+/// which tells the model a 120 Hz voice sits about 5 buckets higher than it does; the engine copied
+/// that until 2026-10-28, when listening preferred the training formula.
 pub fn coarse(f0: f32) -> i64 {
-    let mel = 1127.0 * (1.0 + f0 / 700.0).ln();
-    ((mel - F0_MIN) * 254.0 / (F0_MAX - F0_MIN) + 1.0).clamp(1.0, 255.0).round() as i64
+    let mel = |f: f64| 1127.0 * (1.0 + f / 700.0).ln();
+    let (lo, hi) = (mel(F0_MIN as f64), mel(F0_MAX as f64));
+    ((mel(f0 as f64) - lo) * 254.0 / (hi - lo) + 1.0).clamp(1.0, 255.0).round_ties_even() as i64
 }
 
 /// 3-point median inside voiced runs: a frame whose two neighbours are voiced takes the median

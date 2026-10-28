@@ -9,3 +9,5 @@ numpy==2.5.4
 # torch.onnx.export needs the onnx package; the exports check themselves with onnxruntime (CPU)
 onnx==1.23.1
 onnxruntime==1.24.4
+# Optional, only for tools/export/export_contentvec.py (the shared contentvec graph, exported once):
+#   train\.venv\Scripts\python.exe -m pip install transformers==5.13.1

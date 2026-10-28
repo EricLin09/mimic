@@ -1,12 +1,12 @@
-"""Compare two exports of the same voice: weights, graph structure and outputs on fixed inputs.
+"""Compare two exports: weights, graph structure and outputs on fixed inputs.
 
-Usage: compare_onnx.py <dir_a> <dir_b> [graph ...]      (graphs: synth synth_det retrieval)
+Usage: compare_onnx.py <dir_a> <dir_b> [graph ...]
+       (graphs: synth synth_det retrieval, a voice's; contentvec rmvpe, the shared ones in models/)
 
-Each directory holds a voice's synth.onnx / synth_det.onnx / retrieval.onnx. For every graph present in
-both, prints how many initializers are bit-identical (matched by name, then by position), the op-type
-counts when they differ, and the element-wise difference of the outputs on fixed inputs. synth.onnx
-draws its own noise, so every random node of both graphs gets the same seed, by order of appearance,
-before running.
+For every graph present in both directories, prints how many initializers are bit-identical (matched
+by name, then by position), the op-type counts when they differ, and the element-wise difference of
+the outputs on fixed inputs. synth.onnx draws its own noise, so every random node of both graphs gets
+the same seed, by order of appearance, before running.
 """
 import sys
 from collections import Counter
@@ -62,6 +62,10 @@ def compare_nodes(a, b):
 
 
 def inputs(graph, rng, frames=300, skip=150, hop=400):
+    if graph == "contentvec":
+        return {"audio": (0.1 * rng.standard_normal((1, 48000))).astype(np.float32)}
+    if graph == "rmvpe":  # log-mel-like values, frames a multiple of 32
+        return {"mel": (2 * rng.standard_normal((1, 128, 128)) - 6).astype(np.float32)}
     f0 = (100 + 60 * rng.random((1, frames))).astype(np.float32)
     f0[:, 40:58] = 0  # an unvoiced stretch
     mel = 1127.0 * np.log(1.0 + f0 / 700.0)

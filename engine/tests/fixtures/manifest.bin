@@ -1,0 +1,171 @@
+{
+  "format": "raw little-endian f32, row-major; manifest is UTF-8 JSON",
+  "source_signal": {
+    "kind": "deterministic_synthetic_sweep_harmonics_noise",
+    "seed": 20261027,
+    "frames": 24000,
+    "sample_rate": 48000,
+    "contains_personal_recording": false,
+    "generator_sha256": "84c93f3a767ae36bca51556883234f27f4ff2d459d604745de23872cab4481a4"
+  },
+  "source_hashes": {
+    "applio/rmvpe_reference.py": "824688722008562337d63495a21aeb7724c9d30590f2c5274235008d5942b0e4",
+    "applio/realtime/core.py": "2078f8453844361b75dd3246f2bc6f5cc4f62a87213f5a08264a8132ead446df",
+    "applio/realtime/pipeline.py": "e21f2a091960b6ff35bbb879a549e7abb26532f683f57dec4cee73d0e52416b4",
+    "models/rmvpe.onnx": "8518d3584d6c383c2799da7f50726d2df7e73ccf2c50b355ae3b95dfbae855d6"
+  },
+  "versions": {
+    "python": "3.12.15",
+    "numpy": "2.4.6",
+    "torch": "2.11.0+cu128",
+    "torchaudio": "2.11.0+cu128",
+    "onnxruntime": "1.22.0"
+  },
+  "providers": [
+    "CPUExecutionProvider"
+  ],
+  "mel_frames": 51,
+  "stream_alignment": {
+    "48k_16k": {
+      "width_input": 19,
+      "delay_output": 6.333333333333333,
+      "flush_input": 21
+    },
+    "40k_48k": {
+      "width_input": 7,
+      "delay_output": 8.4,
+      "flush_input": 10
+    }
+  },
+  "fixtures": {
+    "audio_48k": {
+      "shape": [
+        24000
+      ],
+      "bytes": 96000,
+      "sha256": "62415d942bc80051056dba7164bc37d92f61bfbd6461518afb1a7daf437f582f"
+    },
+    "audio_40k": {
+      "shape": [
+        20000
+      ],
+      "bytes": 80000,
+      "sha256": "bdaa4eca7ad9fa9a4853340eb0581c4d00ed14e7c85af7f188d95c013f57938b"
+    },
+    "resample_48k_16k": {
+      "shape": [
+        8000
+      ],
+      "bytes": 32000,
+      "sha256": "387a586655525de3e0ff4496fd51943788d81dbdb4b26f6faf6b1d211638e07b"
+    },
+    "resample_40k_48k": {
+      "shape": [
+        24000
+      ],
+      "bytes": 96000,
+      "sha256": "87b160ab9a0f35b594992cd28b626b809a6ff66e24c7dd212e9dc26a28faaa3f"
+    },
+    "stream_48k_16k": {
+      "shape": [
+        8007
+      ],
+      "bytes": 32028,
+      "sha256": "4812f23b82588121cfe309abd2a0c09facd17deedf95fa640aa7bd8d3f54b031"
+    },
+    "stream_40k_48k": {
+      "shape": [
+        24009
+      ],
+      "bytes": 96036,
+      "sha256": "dacbc2e0e6b8fc6d54e14f5ffbcf7609c783afd1efe801e25dcc5c49f0ad1fae"
+    },
+    "mel_basis": {
+      "shape": [
+        128,
+        513
+      ],
+      "bytes": 262656,
+      "sha256": "aa705641a0a8d5bea3f423a49d0e96535ded7d493544be8c98d1e131782f1df5"
+    },
+    "log_mel": {
+      "shape": [
+        128,
+        51
+      ],
+      "bytes": 26112,
+      "sha256": "66daa7f94c6be2dec5ede771d36ab965132731afc126e9f28ef256e4484ec242"
+    },
+    "salience": {
+      "shape": [
+        59,
+        360
+      ],
+      "bytes": 84960,
+      "sha256": "39820594f45f7244f76e403a55c221008d3cd15e0392fbb1b088b7e0b996464f"
+    },
+    "f0": {
+      "shape": [
+        59
+      ],
+      "bytes": 236,
+      "sha256": "26a928ecd9157cf4aa20dd7bbcfdcbb8d5ffd175ac9a4be0339b75c8189f4045"
+    },
+    "coarse_input": {
+      "shape": [
+        69
+      ],
+      "bytes": 276,
+      "sha256": "930ec0b2593eb5e2af6e7f1f3e3eacd0ddb9e48f1dcf05e5a5f5c5ce16034999"
+    },
+    "coarse": {
+      "shape": [
+        69
+      ],
+      "bytes": 276,
+      "sha256": "d94c6e52b11fe925ca677429588c6352398dc0a2693e6d69ec5d2f1b3aae160b"
+    },
+    "pv_2400_a": {
+      "shape": [
+        2400
+      ],
+      "bytes": 9600,
+      "sha256": "a2c4ae94c64f1088eecc35d76f67e8a3f6d8644b0cdcef4e0b5e9e1ef6806e78"
+    },
+    "pv_2400_b": {
+      "shape": [
+        2400
+      ],
+      "bytes": 9600,
+      "sha256": "e8eec2a030267d28de7b39627bca4f7c8543b7ca560f5070f3e9b73fce013252"
+    },
+    "pv_2400_out": {
+      "shape": [
+        2400
+      ],
+      "bytes": 9600,
+      "sha256": "3fad01ed09110a4ddf93a2f41c8cc78513068e0dc130060ae025a002dacfeaa9"
+    },
+    "pv_511_a": {
+      "shape": [
+        511
+      ],
+      "bytes": 2044,
+      "sha256": "486d79395d4a4c3f5c1ff1ed97979dcfd59144eecc005a1f29b159844788b994"
+    },
+    "pv_511_b": {
+      "shape": [
+        511
+      ],
+      "bytes": 2044,
+      "sha256": "95ad395528d627bc82615e030717c92fbc142d0a4ef9ad1b825f96e1bce7cea4"
+    },
+    "pv_511_out": {
+      "shape": [
+        511
+      ],
+      "bytes": 2044,
+      "sha256": "8eaaf99fad94a93c5de6cdafd3c44d2cb30ae9b827a65db307637eed090d90d4"
+    }
+  }
+}

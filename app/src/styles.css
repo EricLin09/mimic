@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Chakra Petch", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
+  --font-sans: "Chakra Petch", "Microsoft YaHei UI", system-ui, sans-serif;
+  /* 站酷庆科黄油体 for Chinese headlines and buttons, Teko for big numbers / codenames */
+  --font-cn: "ZCOOL QingKe HuangYou", "Microsoft YaHei UI", sans-serif;
+  --font-num: "Teko", "Chakra Petch", sans-serif;
+
+  --color-ink: #06070a;
+  --color-ink-2: #0b0d12;
+  --color-panel: rgb(14 16 22 / 0.72);
+  --color-line: rgb(255 255 255 / 0.07);
+  --color-line-strong: rgb(255 255 255 / 0.14);
+  --color-text: #e8ecf4;
+  --color-muted: #8790a3;
+  --color-dim: #4f5668;
+  --color-you: #4fd8ff;
+  --color-alert: #ff4655;
+  --color-ok: #3ee6a1;
+}
+
+:root {
+  /* the active voice's colour; App sets it from the voice profile */
+  --accent: #f2c14e;
+  --accent-rgb: 242 193 78;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Tauri paints Mica behind a transparent window; the browser preview gets a stand-in. */
+.app-backdrop {
+  background:
+    radial-gradient(1200px 700px at 50% 38%, rgb(var(--accent-rgb) / 0.07), transparent 60%),
+    radial-gradient(900px 600px at 12% 110%, rgb(79 216 255 / 0.06), transparent 60%),
+    linear-gradient(180deg, #090b10 0%, #05060a 100%);
+}
+
+/* faint tactical grid with a slow drift */
+.grid-overlay {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 50% 42%, black 0%, transparent 75%);
+  animation: grid-drift 40s linear infinite;
+}
+
+@keyframes grid-drift {
+  to {
+    background-position: 48px 48px;
+  }
+}
+
+.scanlines {
+  background: repeating-linear-gradient(0deg, rgb(255 255 255 / 0.018) 0 1px, transparent 1px 3px);
+  pointer-events: none;
+}
+
+/* cut-corner panel frame */
+.panel {
+  position: relative;
+  background: var(--color-panel);
+  backdrop-filter: blur(18px) saturate(1.2);
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  background: linear-gradient(140deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0.04) 40%, rgb(var(--accent-rgb) / 0.22));
+  clip-path: inherit;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* HUD corner brackets (top-left, bottom-right) and a sheen that crosses the panel now and then */
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(105deg, transparent 42%, rgb(255 255 255 / 0.05) 50%, transparent 58%),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent));
+  background-size: 260% 100%, 12px 2px, 2px 12px, 12px 2px, 2px 12px;
+  background-position: 130% 0, 0 0, 0 0, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  opacity: 0.85;
+  animation: sheen 11s ease-in-out infinite;
+}
+
+@keyframes sheen {
+  0%,
+  72% {
+    background-position: 130% 0, 0 0, 0 0, 100% 100%, 100% 100%;
+  }
+  100% {
+    background-position: -30% 0, 0 0, 0 0, 100% 100%, 100% 100%;
+  }
+}
+
+@keyframes eq {
+  from {
+    height: 3px;
+  }
+  to {
+    height: 12px;
+  }
+}
+
+/* hollow display text used for codenames behind headlines */
+.outline-text {
+  color: transparent;
+  -webkit-text-stroke: 1px rgb(var(--accent-rgb) / 0.28);
+}
+
+.label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.accent-text {
+  color: var(--accent);
+  text-shadow: 0 0 18px rgb(var(--accent-rgb) / 0.45);
+}
+
+/* range input skin used by the tuning sliders */
+input[type="range"].tac {
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].tac::-webkit-slider-runnable-track {
+  height: 4px;
+  background:
+    linear-gradient(90deg, rgb(var(--accent-rgb) / 0.95) var(--fill, 50%), rgb(255 255 255 / 0.08) var(--fill, 50%));
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
+
+input[type="range"].tac::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 18px;
+  margin-top: -7px;
+  background: var(--color-text);
+  clip-path: polygon(50% 0, 100% 30%, 100% 100%, 0 100%, 0 30%);
+  box-shadow: 0 0 12px rgb(var(--accent-rgb) / 0.8);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
+}

@@ -1,0 +1,2 @@
+# score.py checks these sources byte for byte (SHA-256): never convert line endings
+* -text

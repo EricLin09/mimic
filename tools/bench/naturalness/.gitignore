@@ -1,0 +1,5 @@
+weights/
+cache/
+*.log
+# provenance copies, re-fetched by download.py and never imported
+vendor/*_reference.py

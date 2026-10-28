@@ -1,0 +1,11 @@
+# Training and export environment: Python 3.12, NVIDIA GPU, driver for CUDA 12.8 or newer
+# (RTX 50-series needs a CUDA 12.8+ build of PyTorch). Kept apart from the project's .venv:
+#   py -3.12 -m venv train\.venv
+#   train\.venv\Scripts\python.exe -m pip install -r train\requirements-train.txt
+# Verified together on 2026-10-28 (RTX 5060 Ti, driver 610.88); see docs/training.md.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+numpy==2.5.4
+# torch.onnx.export needs the onnx package; the exports check themselves with onnxruntime (CPU)
+onnx==1.23.1
+onnxruntime==1.24.4
